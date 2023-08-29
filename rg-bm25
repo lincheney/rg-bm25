@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+
+import os
+import json
+import shlex
+import shutil
+import linecache
+import itertools
+import subprocess
+from functools import partial
+import math
+from collections import defaultdict, namedtuple
+
+Data = namedtuple('data', 'filename,lineno,size,text,matches,starts,ends')
+STDIN = '<stdin>'
+
+def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
+    tf = defaultdict(int)
+    idf = defaultdict(set)
+    doclen = defaultdict(int)
+    callback(tf, idf, doclen)
+
+    scores = defaultdict(int)
+    avg_doclen = sum(doclen.values()) / (len(doclen) or 1)
+    idf_score = {k: math.log1p((n - len(v) + 0.5) / (len(v) + 0.5)) for k, v in idf.items()}
+    # idf_score = {k: math.log(n / len(v)) for k, v in idf.items()}
+    for (filename, key), tf_score in tf.items():
+        # tf_score = math.log1p(tf_score)
+        # tf_score = tf_score ** dampen
+        scores[filename] += idf_score[key] * ((tf_score * (k1 + 1)) / (tf_score + k1 * (1 - b + b * doclen[filename] / avg_doclen)) + delta)
+    return scores
+
+def bm25_file(data, tf, idf, doclen, filename_score=0.5, word_boost=5):
+    for x in data:
+        filename = x.filename
+        if x.matches:
+            score = 1
+            if filename == STDIN:
+                filename = x.text.rstrip('\n')
+                score = filename_score
+            for match, start, end in zip(x.matches, x.starts, x.ends):
+                # boost matches at word boundaries
+                encoded = x.text.encode('utf8')
+                if not encoded[start-1:start].isalnum():
+                    score += word_boost
+                if not encoded[end:end+1].isalnum():
+                    score += word_boost
+
+                match = match.lower()
+                key = (match, x.filename == STDIN)
+                tf[(filename, key)] += score
+                idf[key].add(filename)
+        if x.size is not None and filename and filename != STDIN:
+            doclen[filename] = len(filename) * filename_score + x.size
+
+    for filename, key in tf:
+        if filename not in doclen:
+            doclen[filename] = len(filename) * filename_score + os.stat(filename).st_size
+
+def bm25_line(data, tf, idf, doclen):
+    for k, x in data.items():
+        if x.matches:
+            for match in x.matches:
+                match = match.lower()
+                tf[(k, match)] += 1
+                idf[match].add(k)
+            doclen[k] = len(x.text)
+
+def print_line(data, base, highlight):
+    if isinstance(data, Data):
+        line = data.text.encode('utf-8')
+        start = 0
+        for s, e in zip(data.starts, data.ends):
+            print(base, line[start:s].decode('utf-8'), highlight, line[s:e].decode('utf-8'), base, sep='', end='')
+            start = e
+        print(base, line[start:].decode('utf-8').rstrip('\n'), sep='')
+    else:
+        print(base, data.rstrip('\n'), sep='')
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--directory', default='.')
+    parser.add_argument('-r', '--reverse', action='store_true')
+    parser.add_argument('-m', '--max-matches', type=int, default=20)
+    parser.add_argument('-M', '--max-lines-per-file', type=int, default=3)
+    parser.add_argument('-N', '--no-line-number', action='store_true', help='Suppress line numbers')
+    parser.add_argument('-l', '--files-with-matches', action='store_true')
+    parser.add_argument('-w', '--word-regexp', action='store_true')
+    parser.add_argument('--colour', choices=('never', 'auto', 'always'), default='auto')
+    parser.add_argument('-C', '--context', type=int, default=1)
+    parser.add_argument('pattern', nargs='*')
+    args = parser.parse_args()
+
+    if not ''.join(args.pattern):
+        return
+
+    files = subprocess.run(['rg', '--files', args.directory], stdout=subprocess.PIPE).stdout
+
+    command = ['rg', '-S', '--json']
+    if args.word_regexp:
+        command += ['-w']
+    for t in args.pattern:
+        command += ['-e', t]
+    command += ['--', '-', args.directory]
+    # use jq to reduce the amount of data
+    command = ' '.join(map(shlex.quote, command)) + " | jq -rc '.data | [.path.text, .line_number, .stats.bytes_searched, .lines.text, (.submatches//[] | map(.match.text), map(.start), map(.end) )]' "
+
+    data = subprocess.run(command, shell=True, input=files, stdout=subprocess.PIPE).stdout.splitlines()
+    data = [Data(*l) for l in json.loads(b'[' + b','.join(data) + b']')] # this is faster than parsing each line separately
+    scores = bm25(partial(bm25_file, data), len(files.splitlines()))
+    if not scores:
+        return
+
+    ranked = sorted(scores, key=scores.get, reverse=True)[:args.max_matches]
+    if not args.reverse:
+        ranked.reverse()
+
+    filenames = {x.text.rstrip('\n'): x for x in data if x.text and x.filename == STDIN}
+    sizes = {x.filename: x.size for x in data if x.size is not None}
+    data = (x for x in data if x.matches and x.filename in ranked)
+    data = itertools.groupby(data, lambda x: x.filename)
+    data = {k: {x.lineno: x for x in v} for k, v in data}
+
+    istty = os.isatty(1)
+    if args.colour == 'always' or (istty and args.colour == 'auto'):
+        colour = lambda c: '\x1b[' + c + 'm'
+    else:
+        colour = lambda c: ''
+
+    term_size = shutil.get_terminal_size()
+    for i, filename in enumerate(ranked, 1):
+        print_line(filenames.get(filename, filename), colour('0;95'), colour('0;1;4;35'))
+
+        if args.files_with_matches:
+            continue
+
+        scores = []
+        if filename in data:
+            # prioritise lines with many matches
+            lines = linecache.getlines(filename)
+            line_scores = bm25(partial(bm25_line, data[filename]), sizes[filename])
+            matches = {k: set(map(str.lower, v.matches)) for k, v in data[filename].items()}
+
+            while len(scores) < args.max_lines_per_file and any(matches.values()):
+                best = sorted(matches.items(), key=lambda kv: (len(kv[1]), line_scores[kv[0]]), reverse=True)[0]
+                matches.pop(best[0])
+                scores.append(best[0])
+                for v in matches.values():
+                    v.difference_update(best[1])
+            scores.extend(sorted([x for x in data[filename] if x not in scores]))
+            scores = sorted(scores[:args.max_lines_per_file])
+
+        last = 1
+        for j in scores:
+            x = data[filename][j]
+            if last != 1 and x.lineno - args.context > last:
+                print(colour('37'), '---', colour('0'), sep='')
+
+            first = max(last, x.lineno - args.context)
+            last = min(len(lines), x.lineno + args.context) + 1
+            for k in range(first, last):
+                x = data[filename].get(k)
+                if not args.no_line_number:
+                    print(colour('0;37' if x else '0;2;37'), '%-4s' % k, colour('0;37'), '| ', colour('0'), sep='', end='')
+                print_line(x or lines[k-1], colour('0'), colour('1;31'))
+
+        if i != len(ranked):
+            print(colour('37'), '─'*(term_size.columns - 4), colour('0'), sep='')
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
