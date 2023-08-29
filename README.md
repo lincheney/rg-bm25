@@ -22,5 +22,5 @@ Run `./rg-bm25 --help` for more options.
 Example of `./rg-bm25 s3` running over the [rclone docs](https://github.com/rclone/rclone/tree/master/docs).
 Best matches are at the bottom
 
-![rg-bm25](https://user-images.githubusercontent.com/1336117/263998106-a36eef95-3f7c-46df-a6e8-0c2d08f27ebf.png)
+![rg-bm25](https://github.com/lincheney/rg-bm25/assets/1336117/f77696e5-44da-4a93-a3b9-337129270e7a)
 
