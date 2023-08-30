@@ -4,15 +4,20 @@ import os
 import sys
 import json
 import shutil
+import sqlite3
 import linecache
 import itertools
 import subprocess
-from functools import partial
+from functools import partial, cache
 import math
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 
-Data = namedtuple('data', 'filename,lineno,size,text,matches,starts,ends')
 STDIN = '<stdin>'
+FILENAME = 0
+LINENO = 1
+SIZE = 2
+TEXT = 3
+SUBMATCHES = 4
 
 BAR = '▏'
 COLOURS = dict(
@@ -25,6 +30,9 @@ COLOURS = dict(
     lineno_match = '\x1b[0;37m',
     match = '\x1b[0;1;40;31m',
 )
+
+def get_file_size(filename):
+    return os.stat(filename).st_size
 
 def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
     tf = defaultdict(int)
@@ -44,16 +52,19 @@ def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
 
 def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
     for x in data:
-        filename = x.filename
-        if x.matches:
+        filename = x[FILENAME]
+
+        if x[SIZE] is not None and filename and filename != STDIN:
+            doclen[filename] = len(filename) * filename_scale + x[SIZE]
+
+        if x[TEXT]:
             scale = 1
             if filename == STDIN:
-                filename = x.text.rstrip('\n')
+                filename = x[TEXT].rstrip('\n')
                 scale = filename_scale
-            for match, start, end in zip(x.matches, x.starts, x.ends):
+            encoded = x[TEXT].encode('utf8')
+            for match, start, end in x[SUBMATCHES]:
                 score = 1
-                # don't bother encoding if ascii
-                encoded = x.text if x.text.isascii() else x.text.encode('utf8')
                 # boost matches at word boundaries
                 if not encoded[start-1:start].isalnum():
                     score += word_boost
@@ -61,35 +72,72 @@ def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
                     score += word_boost
                 score *= scale
 
-                match = match.lower()
                 tf[(filename, match)] += score
                 idf[match].add(filename)
-        if x.size is not None and filename and filename != STDIN:
-            doclen[filename] = len(filename) * filename_scale + x.size
 
     for filename, key in tf:
         if filename not in doclen:
-            doclen[filename] = len(filename) * filename_scale + os.stat(filename).st_size
+            doclen[filename] = len(filename) * filename_scale + get_file_size(filename)
 
 def bm25_line(data, tf, idf, doclen):
     for k, x in data.items():
-        if x.matches:
-            for match in x.matches:
-                match = match.lower()
+        if x[SUBMATCHES]:
+            for match, start, end in x[SUBMATCHES]:
                 tf[(k, match)] += 1
                 idf[match].add(k)
-            doclen[k] = len(x.text)
+            doclen[k] = len(x[TEXT])
 
 def print_line(data, base, highlight):
-    if isinstance(data, Data):
-        line = data.text.encode('utf-8')
-        start = 0
-        for s, e in zip(data.starts, data.ends):
-            print(base, line[start:s].decode('utf-8'), highlight, line[s:e].decode('utf-8'), base, sep='', end='')
-            start = e
-        print(base, line[start:].decode('utf-8').rstrip('\n'), COLOURS['reset'], sep='')
-    else:
+    if isinstance(data, str):
         print(base, data.rstrip('\n'), COLOURS['reset'], sep='')
+    else:
+        line = data[TEXT].encode('utf-8')
+        start = 0
+        base = base.encode('utf8')
+        highlight = highlight.encode('utf8')
+
+        sys.stdout.buffer.flush()
+        for m, s, e in data[SUBMATCHES]:
+            sys.stdout.buffer.write(base + line[start:s] + highlight + line[s:e] + base)
+            start = e
+        sys.stdout.buffer.write(base + line[start:] + COLOURS['reset'].encode('utf8'))
+
+def parse_ripgrep_json(lines):
+    # if too much data, it can be faster to use sqlite to do json parsing
+    if len(lines) > 10000 and sqlite3.sqlite_version_info >= (3, 38):
+        db = sqlite3.connect(":memory:")
+        db.execute('CREATE TABLE data (id INTEGER, json TEXT)')
+        db.executemany('INSERT INTO data (id, json) VALUES (?, ?)', enumerate(lines))
+
+        data = db.execute("""SELECT
+            id,
+            json_extract(json, '$.data.path.text'),
+            json_extract(json, '$.data.line_number'),
+            json_extract(json, '$.data.stats.bytes_searched'),
+            json_extract(json, '$.data.lines.text')
+        FROM data""")
+        data = [x[1:]+([],) for x in sorted(data)]
+        submatches = db.execute("""SELECT
+            data.id,
+            json_extract(value, '$.match.text'),
+            json_extract(value, '$.start'),
+            json_extract(value, '$.end')
+        FROM data, json_each(data.json, '$.data.submatches') """)
+        for id, match, start, end in submatches:
+            data[id][SUBMATCHES].append((match.lower(), start, end))
+
+        return data
+
+    # this is faster than parsing each line separately
+    data = (x['data'] for x in json.loads(b'[' + b','.join(lines) + b']'))
+    data = [(
+        x.get('path', {}).get('text'),
+        x.get('line_number'),
+        x.get('stats', {}).get('bytes_searched'),
+        x.get('lines', {}).get('text'),
+        [(y['match']['text'].lower(), y['start'], y['end']) for y in x.get('submatches', ())],
+    ) for x in data]
+    return data
 
 def main():
     import argparse
@@ -129,17 +177,7 @@ def main():
     command += ['--', '-', *args.directory]
 
     data = subprocess.run(command, input=files, stdout=subprocess.PIPE).stdout.splitlines()
-    # this is faster than parsing each line separately
-    data = (x['data'] for x in json.loads(b'[' + b','.join(data) + b']'))
-    data = [Data(
-        x.get('path', {}).get('text'),
-        x.get('line_number'),
-        x.get('stats', {}).get('bytes_searched'),
-        x.get('lines', {}).get('text'),
-        [y['match']['text'] for y in x.get('submatches', ())],
-        [y['start'] for y in x.get('submatches', ())],
-        [y['end'] for y in x.get('submatches', ())],
-    ) for x in data]
+    data = parse_ripgrep_json(data)
 
     scores = bm25(partial(bm25_file, data), len(files.splitlines()))
     if not scores:
@@ -149,15 +187,15 @@ def main():
     if not args.reverse:
         ranked.reverse()
 
-    filenames = {x.text.rstrip('\n'): x for x in data if x.text and x.filename == STDIN}
-    sizes = {x.filename: x.size for x in data if x.size is not None}
-    data = (x for x in data if x.matches and x.filename in ranked)
-    data = itertools.groupby(data, lambda x: x.filename)
-    data = {k: {x.lineno: x for x in v} for k, v in data}
+    filenames = {x[TEXT].rstrip('\n'): x for x in data if x[TEXT] and x[FILENAME] == STDIN}
+    sizes = {x[FILENAME]: x[SIZE] for x in data if x[SIZE] is not None}
+    data = (x for x in data if x[SUBMATCHES] and x[FILENAME] in ranked)
+    data = itertools.groupby(data, lambda x: x[FILENAME])
+    data = {k: {x[LINENO]: x for x in v} for k, v in data}
 
     if args.colour == 'never' or (args.colour == 'auto' and not istty):
-        global COLOURS
-        COLOURS = defaultdict(str)
+        for k in COLOURS:
+            COLOURS[k] = ''
 
     delta = None
     used_delta = False
@@ -180,8 +218,8 @@ def main():
         if filename in data:
             # prioritise lines with many matches
             lines = linecache.getlines(filename)
-            line_scores = bm25(partial(bm25_line, data[filename]), sizes[filename])
-            matches = {k: set(map(str.lower, v.matches)) for k, v in data[filename].items()}
+            line_scores = bm25(partial(bm25_line, data[filename]), sizes.get(filename) or get_file_size(filename))
+            matches = {k: set(m for m, s, e in v[SUBMATCHES]) for k, v in data[filename].items()}
 
             while len(scores) < args.max_count and any(matches.values()):
                 best = max(matches.items(), key=lambda kv: (len(kv[1]), line_scores[kv[0]]))
@@ -194,9 +232,9 @@ def main():
 
         output = set()
         for j in scores:
-            lineno = data[filename][j].lineno
+            lineno = data[filename][j][LINENO]
             output.update(range(max(1, lineno - args.context), min(len(lines), lineno + args.context)+1))
-        output = [data[filename].setdefault(x, Data(filename, x, None, lines[x-1], (), (), ())) for x in sorted(output)]
+        output = [data[filename].setdefault(x, (filename, x, None, lines[x-1], (), (), ())) for x in sorted(output)]
 
         if output:
             if not delta:
@@ -208,10 +246,10 @@ def main():
                     "type":"match",
                     "data":{
                         "path": {"text": filename},
-                        "lines": {"text": ' \n' if x.text == '\n' else x.text},
-                        "line_number": x.lineno,
+                        "lines": {"text": ' \n' if x[TEXT] == '\n' else x[TEXT]},
+                        "line_number": x[LINENO],
                         "absolute_offset": 0,
-                        "submatches": [{'match': {'text': m}, 'start': s, 'end': e} for m, s, e in zip(x.matches, x.starts, x.ends)],
+                        "submatches": [{'match': {'text': m}, 'start': s, 'end': e} for m, s, e in x[SUBMATCHES]],
                     },
                 } for x in output)
                 input.append({"type": "end", "data": {"path": {"text": filename}}})
@@ -225,11 +263,11 @@ def main():
 
         lineno = 1
         for x, line in output:
-            if lineno != 1 and x.lineno > lineno + 1:
+            if lineno != 1 and x[LINENO] > lineno + 1:
                 print(COLOURS['separator'], '---', COLOURS['reset'], sep='')
-            lineno = x.lineno
+            lineno = x[LINENO]
             if not args.no_line_number:
-                print(COLOURS['lineno_match'] if x.matches else COLOURS['lineno'], '%-4s' % x.lineno, COLOURS['lineno'], BAR, COLOURS['reset'], sep='', end='')
+                print(COLOURS['lineno_match'] if x[SUBMATCHES] else COLOURS['lineno'], '%-4s' % lineno, COLOURS['lineno'], BAR, COLOURS['reset'], sep='', end='')
             if line is None:
                 print_line(x, COLOURS['reset'], COLOURS['match'])
             else:
