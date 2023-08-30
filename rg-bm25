@@ -162,7 +162,7 @@ def main():
     used_delta = False
     if not args.files_with_matches and istty and have_delta:
         delta = subprocess.Popen(
-            ['delta', '--hunk-header-style=raw', '--grep-header-file-style=omit', ],
+            ['delta', '--hunk-header-style=raw', '--grep-header-file-style=omit', '--tabs=0'],
             env={**os.environ, 'DELTA_FEATURES': '+rg-bm25 '+os.environ.get('DELTA_FEATURES', '')},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
