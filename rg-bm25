@@ -93,7 +93,7 @@ def print_line(data, base, highlight):
 def main():
     import argparse
     parser = argparse.ArgumentParser(epilog='Extra flags are passed to rg.')
-    parser.add_argument('-d', '--directory', default='.', help='File or directory to search')
+    parser.add_argument('-d', '--directory', action='append', help='File or directory to search')
     parser.add_argument('-r', '--reverse', action='store_true', help='Show results in reverse order i.e. best matches at the top')
     parser.add_argument('-n', '--num-matches', type=int, metavar='N', default=20, help='Show only the best N matching files')
     parser.add_argument('-M', '--max-count', type=int, metavar='N', default=3, help='Show only N matching lines per file')
@@ -108,24 +108,24 @@ def main():
 
     if args.invert_match:
         parser.error('-v/--invert-match is not supported')
-
     if not ''.join(args.pattern):
         parser.print_help()
         return
+    args.directory = args.directory or ['.']
 
     istty = os.isatty(1)
     term_size = shutil.get_terminal_size()
     have_delta = not args.no_delta and shutil.which('delta')
 
     try:
-        files = subprocess.check_output(['rg', '--files', *extras, args.directory])
+        files = subprocess.check_output(['rg', '--files', *extras, *args.directory])
     except subprocess.CalledProcessError as e:
         return e.returncode
 
     command = ['rg', '-S', '--json', *extras]
     for t in args.pattern:
         command += ['-e', t]
-    command += ['--', '-', args.directory]
+    command += ['--', '-', *args.directory]
 
     data = subprocess.run(command, input=files, stdout=subprocess.PIPE).stdout.splitlines()
     # this is faster than parsing each line separately
