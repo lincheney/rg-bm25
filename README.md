@@ -10,7 +10,6 @@ No search indexing is done; searches are performed from scratch every time.
 You need to have installed:
 * Python 3
 * [rg](https://github.com/BurntSushi/ripgrep#installation)
-* [jq](https://github.com/jqlang/jq#installation)
 * (optional) [delta](https://github.com/dandavison/delta)
 
 Search in the current directory: `./rg-bm25 some keyword`

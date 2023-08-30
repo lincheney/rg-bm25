@@ -109,6 +109,10 @@ def main():
         parser.print_help()
         return
 
+    istty = os.isatty(1)
+    term_size = shutil.get_terminal_size()
+    have_delta = not args.no_delta and shutil.which('delta')
+
     try:
         files = subprocess.check_output(['rg', '--files', *extras, args.directory])
     except subprocess.CalledProcessError as e:
@@ -118,11 +122,20 @@ def main():
     for t in args.pattern:
         command += ['-e', t]
     command += ['--', '-', args.directory]
-    # use jq to reduce the amount of data
-    command = ' '.join(map(shlex.quote, command)) + " | jq -rc '.data | [.path.text, .line_number, .stats.bytes_searched, .lines.text, (.submatches//[] | map(.match.text), map(.start), map(.end) )]' "
 
-    data = subprocess.run(command, shell=True, input=files, stdout=subprocess.PIPE).stdout.splitlines()
-    data = [Data(*l) for l in json.loads(b'[' + b','.join(data) + b']')] # this is faster than parsing each line separately
+    data = subprocess.run(command, input=files, stdout=subprocess.PIPE).stdout.splitlines()
+    # this is faster than parsing each line separately
+    data = (x['data'] for x in json.loads(b'[' + b','.join(data) + b']'))
+    data = [Data(
+        x.get('path', {}).get('text'),
+        x.get('line_number'),
+        x.get('stats', {}).get('bytes_searched'),
+        x.get('lines', {}).get('text'),
+        [y['match']['text'] for y in x.get('submatches', ())],
+        [y['start'] for y in x.get('submatches', ())],
+        [y['end'] for y in x.get('submatches', ())],
+    ) for x in data]
+
     scores = bm25(partial(bm25_file, data), len(files.splitlines()))
     if not scores:
         return
@@ -137,14 +150,13 @@ def main():
     data = itertools.groupby(data, lambda x: x.filename)
     data = {k: {x.lineno: x for x in v} for k, v in data}
 
-    istty = os.isatty(1)
     if args.colour == 'never' or (args.colour == 'auto' and not istty):
         global COLOURS
         COLOURS = defaultdict(str)
 
     delta = None
     used_delta = False
-    if not args.files_with_matches and not args.no_delta and istty and shutil.which('delta'):
+    if not args.files_with_matches and istty and have_delta:
         delta = subprocess.Popen(
             ['delta', '--hunk-header-style=raw', '--grep-header-file-style=omit', ],
             env={**os.environ, 'DELTA_FEATURES': '+rg-bm25 '+os.environ.get('DELTA_FEATURES', '')},
@@ -153,7 +165,6 @@ def main():
             text=True,
         )
 
-    term_size = shutil.get_terminal_size()
     for i, filename in enumerate(ranked, 1):
         if args.files_with_matches:
             print_line(filenames.get(filename, filename), COLOURS['filename'], COLOURS['filename_match'])
