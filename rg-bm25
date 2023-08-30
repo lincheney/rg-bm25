@@ -52,8 +52,9 @@ def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
                 scale = filename_scale
             for match, start, end in zip(x.matches, x.starts, x.ends):
                 score = 1
+                # don't bother encoding if ascii
+                encoded = x.text if x.text.isascii() else x.text.encode('utf8')
                 # boost matches at word boundaries
-                encoded = x.text.encode('utf8')
                 if not encoded[start-1:start].isalnum():
                     score += word_boost
                 if not encoded[end:end+1].isalnum():
