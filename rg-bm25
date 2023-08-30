@@ -106,6 +106,7 @@ def main():
     args, extras = parser.parse_known_args()
 
     if not ''.join(args.pattern):
+        parser.print_help()
         return
 
     try:
