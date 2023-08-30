@@ -102,7 +102,7 @@ def main():
     parser.add_argument('--colour', '--color', choices=('never', 'auto', 'always'), default='auto', help='Whether to show colours (default: %(default)s)')
     parser.add_argument('-C', '--context', type=int, metavar='N', default=1, help='Show N lines before and after matching lines')
     parser.add_argument('--no-delta', action='store_true', help='Do not use delta for syntax highlighting')
-    parser.add_argument('-v', '--invert-match', action='store_true', help='This option is unsupported')
+    parser.add_argument('-v', '--invert-match', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('pattern', nargs='*')
     args, extras = parser.parse_known_args()
 
