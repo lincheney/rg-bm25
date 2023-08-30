@@ -43,32 +43,33 @@ def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
         scores[filename] += idf_score[key] * ((tf_score * (k1 + 1)) / (tf_score + k1 * (1 - b + b * doclen[filename] / avg_doclen)) + delta)
     return scores
 
-def bm25_file(data, tf, idf, doclen, filename_score=0.5, word_boost=5):
+def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
     for x in data:
         filename = x.filename
         if x.matches:
-            score = 1
+            scale = 1
             if filename == STDIN:
                 filename = x.text.rstrip('\n')
-                score = filename_score
+                scale = filename_scale
             for match, start, end in zip(x.matches, x.starts, x.ends):
+                score = 1
                 # boost matches at word boundaries
                 encoded = x.text.encode('utf8')
                 if not encoded[start-1:start].isalnum():
                     score += word_boost
                 if not encoded[end:end+1].isalnum():
                     score += word_boost
+                score *= scale
 
                 match = match.lower()
-                key = (match, x.filename == STDIN)
-                tf[(filename, key)] += score
-                idf[key].add(filename)
+                tf[(filename, match)] += score
+                idf[match].add(filename)
         if x.size is not None and filename and filename != STDIN:
-            doclen[filename] = len(filename) * filename_score + x.size
+            doclen[filename] = len(filename) * filename_scale + x.size
 
     for filename, key in tf:
         if filename not in doclen:
-            doclen[filename] = len(filename) * filename_score + os.stat(filename).st_size
+            doclen[filename] = len(filename) * filename_scale + os.stat(filename).st_size
 
 def bm25_line(data, tf, idf, doclen):
     for k, x in data.items():
