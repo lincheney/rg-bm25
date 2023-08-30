@@ -34,7 +34,7 @@ COLOURS = dict(
 def get_file_size(filename):
     return os.stat(filename).st_size
 
-def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
+def bm25(callback, n, k1=1.5, b=0.5, delta=1, dampen=0.75):
     tf = defaultdict(int)
     idf = defaultdict(set)
     doclen = defaultdict(int)
@@ -50,7 +50,7 @@ def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
         scores[filename] += idf_score[key] * ((tf_score * (k1 + 1)) / (tf_score + k1 * (1 - b + b * doclen[filename] / avg_doclen)) + delta)
     return scores
 
-def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
+def bm25_file(data, tf, idf, doclen, filename_scale=1, word_boost=5):
     for x in data:
         filename = x[FILENAME]
 
@@ -72,8 +72,9 @@ def bm25_file(data, tf, idf, doclen, filename_scale=2, word_boost=5):
                     score += word_boost
                 score *= scale
 
-                tf[(filename, match)] += score
-                idf[match].add(filename)
+                key = (x[FILENAME] == STDIN, match)
+                tf[(filename, key)] += score
+                idf[key].add(filename)
 
     for filename, key in tf:
         if filename not in doclen:
@@ -145,7 +146,7 @@ def main():
     parser.add_argument('-d', '--directory', action='append', help='File or directory to search')
     parser.add_argument('-r', '--reverse', action='store_true', help='Show results in reverse order i.e. best matches at the top')
     parser.add_argument('-n', '--num-matches', type=int, metavar='N', default=20, help='Show only the best N matching files')
-    parser.add_argument('-M', '--max-count', type=int, metavar='N', default=3, help='Show only N matching lines per file')
+    parser.add_argument('-m', '--max-count', type=int, metavar='N', default=3, help='Show only N matching lines per file')
     parser.add_argument('-N', '--no-line-number', action='store_true', help='Suppress line numbers')
     parser.add_argument('-l', '--files-with-matches', action='store_true', help='Print only filenames and not file content')
     parser.add_argument('--colour', '--color', choices=('never', 'auto', 'always'), default='auto', help='Whether to show colours (default: %(default)s)')
