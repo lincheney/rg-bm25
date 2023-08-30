@@ -93,16 +93,16 @@ def print_line(data, base, highlight):
 def main():
     import argparse
     parser = argparse.ArgumentParser(epilog='Extra flags are passed to rg.')
-    parser.add_argument('-d', '--directory', default='.')
-    parser.add_argument('-r', '--reverse', action='store_true')
-    parser.add_argument('-m', '--max-matches', type=int, default=20)
-    parser.add_argument('-M', '--max-lines-per-file', type=int, default=3)
+    parser.add_argument('-d', '--directory', default='.', help='File or directory to search')
+    parser.add_argument('-r', '--reverse', action='store_true', help='Show results in reverse order i.e. best matches at the top')
+    parser.add_argument('-n', '--num-matches', type=int, metavar='N', default=20, help='Show only the best N matching files')
+    parser.add_argument('-M', '--max-count', type=int, metavar='N', default=3, help='Show only N matching lines per file')
     parser.add_argument('-N', '--no-line-number', action='store_true', help='Suppress line numbers')
-    parser.add_argument('-l', '--files-with-matches', action='store_true')
-    parser.add_argument('--colour', choices=('never', 'auto', 'always'), default='auto')
-    parser.add_argument('-C', '--context', type=int, default=1)
-    parser.add_argument('--no-delta', action='store_true')
-    parser.add_argument('-v', '--invert-match', action='store_true')
+    parser.add_argument('-l', '--files-with-matches', action='store_true', help='Print only filenames and not file content')
+    parser.add_argument('--colour', '--color', choices=('never', 'auto', 'always'), default='auto', help='Whether to show colours (default: %(default)s)')
+    parser.add_argument('-C', '--context', type=int, metavar='N', default=1, help='Show N lines before and after matching lines')
+    parser.add_argument('--no-delta', action='store_true', help='Do not use delta for syntax highlighting')
+    parser.add_argument('-v', '--invert-match', action='store_true', help='This option is unsupported')
     parser.add_argument('pattern', nargs='*')
     args, extras = parser.parse_known_args()
 
@@ -144,7 +144,7 @@ def main():
     if not scores:
         return
 
-    ranked = sorted(scores, key=scores.get, reverse=True)[:args.max_matches]
+    ranked = sorted(scores, key=scores.get, reverse=True)[:args.num_matches]
     if not args.reverse:
         ranked.reverse()
 
@@ -182,14 +182,14 @@ def main():
             line_scores = bm25(partial(bm25_line, data[filename]), sizes[filename])
             matches = {k: set(map(str.lower, v.matches)) for k, v in data[filename].items()}
 
-            while len(scores) < args.max_lines_per_file and any(matches.values()):
+            while len(scores) < args.max_count and any(matches.values()):
                 best = max(matches.items(), key=lambda kv: (len(kv[1]), line_scores[kv[0]]))
                 matches.pop(best[0])
                 scores.append(best[0])
                 for v in matches.values():
                     v.difference_update(best[1])
             scores.extend(sorted([x for x in data[filename] if x not in scores]))
-            scores = sorted(scores[:args.max_lines_per_file])
+            scores = sorted(scores[:args.max_count])
 
         output = set()
         for j in scores:
