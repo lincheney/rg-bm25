@@ -143,6 +143,7 @@ def main():
         COLOURS = defaultdict(str)
 
     delta = None
+    used_delta = False
     if not args.files_with_matches and not args.no_delta and istty and shutil.which('delta'):
         delta = subprocess.Popen(
             ['delta', '--hunk-header-style=raw', '--grep-header-file-style=omit', ],
@@ -200,9 +201,10 @@ def main():
                 input.append({"type": "end", "data": {"path": {"text": filename}}})
 
                 print('\n'.join(json.dumps(i) for i in input), file=delta.stdin, flush=True)
-                if i > 1:
+                if used_delta:
                     next(delta.stdout) # read the trailer
                 next(delta.stdout) # read the filename
+                used_delta = True
                 output = zip(output, delta.stdout)
 
         lineno = 1
