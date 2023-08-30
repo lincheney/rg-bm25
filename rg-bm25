@@ -179,28 +179,29 @@ def main():
             output.update(range(max(1, lineno - args.context), min(len(lines), lineno + args.context)))
         output = [data[filename].setdefault(x, Data(filename, x, None, lines[x-1], (), (), ())) for x in sorted(output)]
 
-        if not delta:
-            output = itertools.zip_longest(output, ())
-        else:
-            input = []
-            input.append({"type": "begin", "data": {"path": {"text": filename}}})
-            input.extend({
-                "type":"match",
-                "data":{
-                    "path": {"text": filename},
-                    "lines": {"text": ' \n' if x.text == '\n' else x.text},
-                    "line_number": x.lineno,
-                    "absolute_offset": 0,
-                    "submatches": [{'match': {'text': m}, 'start': s, 'end': e} for m, s, e in zip(x.matches, x.starts, x.ends)],
-                },
-            } for x in output)
-            input.append({"type": "end", "data": {"path": {"text": filename}}})
+        if output:
+            if not delta:
+                output = itertools.zip_longest(output, ())
+            else:
+                input = []
+                input.append({"type": "begin", "data": {"path": {"text": filename}}})
+                input.extend({
+                    "type":"match",
+                    "data":{
+                        "path": {"text": filename},
+                        "lines": {"text": ' \n' if x.text == '\n' else x.text},
+                        "line_number": x.lineno,
+                        "absolute_offset": 0,
+                        "submatches": [{'match': {'text': m}, 'start': s, 'end': e} for m, s, e in zip(x.matches, x.starts, x.ends)],
+                    },
+                } for x in output)
+                input.append({"type": "end", "data": {"path": {"text": filename}}})
 
-            print('\n'.join(json.dumps(i) for i in input), file=delta.stdin, flush=True)
-            if i > 1:
-                next(delta.stdout) # read the trailer
-            next(delta.stdout) # read the filename
-            output = zip(output, delta.stdout)
+                print('\n'.join(json.dumps(i) for i in input), file=delta.stdin, flush=True)
+                if i > 1:
+                    next(delta.stdout) # read the trailer
+                next(delta.stdout) # read the filename
+                output = zip(output, delta.stdout)
 
         lineno = 1
         for x, line in output:
