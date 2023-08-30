@@ -102,8 +102,12 @@ def main():
     parser.add_argument('--colour', choices=('never', 'auto', 'always'), default='auto')
     parser.add_argument('-C', '--context', type=int, default=1)
     parser.add_argument('--no-delta', action='store_true')
+    parser.add_argument('-v', '--invert-match', action='store_true')
     parser.add_argument('pattern', nargs='*')
     args, extras = parser.parse_known_args()
+
+    if args.invert_match:
+        parser.error('-v/--invert-match is not supported')
 
     if not ''.join(args.pattern):
         parser.print_help()
