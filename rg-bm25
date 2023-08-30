@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import sys
 import json
 import shlex
 import shutil
@@ -91,28 +92,28 @@ def print_line(data, base, highlight):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(epilog='Extra flags are passed to rg.')
     parser.add_argument('-d', '--directory', default='.')
     parser.add_argument('-r', '--reverse', action='store_true')
     parser.add_argument('-m', '--max-matches', type=int, default=20)
     parser.add_argument('-M', '--max-lines-per-file', type=int, default=3)
     parser.add_argument('-N', '--no-line-number', action='store_true', help='Suppress line numbers')
     parser.add_argument('-l', '--files-with-matches', action='store_true')
-    parser.add_argument('-w', '--word-regexp', action='store_true')
     parser.add_argument('--colour', choices=('never', 'auto', 'always'), default='auto')
     parser.add_argument('-C', '--context', type=int, default=1)
     parser.add_argument('--no-delta', action='store_true')
     parser.add_argument('pattern', nargs='*')
-    args = parser.parse_args()
+    args, extras = parser.parse_known_args()
 
     if not ''.join(args.pattern):
         return
 
-    files = subprocess.run(['rg', '--files', args.directory], stdout=subprocess.PIPE).stdout
+    try:
+        files = subprocess.check_output(['rg', '--files', *extras, args.directory])
+    except subprocess.CalledProcessError as e:
+        return e.returncode
 
-    command = ['rg', '-S', '--json']
-    if args.word_regexp:
-        command += ['-w']
+    command = ['rg', '-S', '--json', *extras]
     for t in args.pattern:
         command += ['-e', t]
     command += ['--', '-', args.directory]
@@ -225,6 +226,6 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (KeyboardInterrupt, BrokenPipeError):
         pass
