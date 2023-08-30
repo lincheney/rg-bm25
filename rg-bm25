@@ -194,7 +194,7 @@ def main():
         output = set()
         for j in scores:
             lineno = data[filename][j].lineno
-            output.update(range(max(1, lineno - args.context), min(len(lines), lineno + args.context)))
+            output.update(range(max(1, lineno - args.context), min(len(lines), lineno + args.context)+1))
         output = [data[filename].setdefault(x, Data(filename, x, None, lines[x-1], (), (), ())) for x in sorted(output)]
 
         if output:
