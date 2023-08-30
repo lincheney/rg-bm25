@@ -14,6 +14,18 @@ from collections import defaultdict, namedtuple
 Data = namedtuple('data', 'filename,lineno,size,text,matches,starts,ends')
 STDIN = '<stdin>'
 
+BAR = '▏'
+COLOURS = dict(
+    reset = '\x1b[0m',
+    filename = '\x1b[0;95m',
+    filename_match = '\x1b[0;1;4;35m',
+    filename_header = '\x1b[48;5;236m',
+    separator = '\x1b[0;37m',
+    lineno = '\x1b[0;2;37m',
+    lineno_match = '\x1b[0;37m',
+    match = '\x1b[0;1;40;31m',
+)
+
 def bm25(callback, n, k1=1.5, b=0.75, delta=1, dampen=0.75):
     tf = defaultdict(int)
     idf = defaultdict(set)
@@ -73,9 +85,9 @@ def print_line(data, base, highlight):
         for s, e in zip(data.starts, data.ends):
             print(base, line[start:s].decode('utf-8'), highlight, line[s:e].decode('utf-8'), base, sep='', end='')
             start = e
-        print(base, line[start:].decode('utf-8').rstrip('\n'), sep='')
+        print(base, line[start:].decode('utf-8').rstrip('\n'), COLOURS['reset'], sep='')
     else:
-        print(base, data.rstrip('\n'), sep='')
+        print(base, data.rstrip('\n'), COLOURS['reset'], sep='')
 
 def main():
     import argparse
@@ -89,6 +101,7 @@ def main():
     parser.add_argument('-w', '--word-regexp', action='store_true')
     parser.add_argument('--colour', choices=('never', 'auto', 'always'), default='auto')
     parser.add_argument('-C', '--context', type=int, default=1)
+    parser.add_argument('--no-delta', action='store_true')
     parser.add_argument('pattern', nargs='*')
     args = parser.parse_args()
 
@@ -123,17 +136,26 @@ def main():
     data = {k: {x.lineno: x for x in v} for k, v in data}
 
     istty = os.isatty(1)
-    if args.colour == 'always' or (istty and args.colour == 'auto'):
-        colour = lambda c: '\x1b[' + c + 'm'
-    else:
-        colour = lambda c: ''
+    if args.colour == 'never' or (args.colour == 'auto' and not istty):
+        global COLOURS
+        COLOURS = defaultdict(str)
+
+    delta = None
+    if not args.files_with_matches and not args.no_delta and istty and shutil.which('delta'):
+        delta = subprocess.Popen(
+            ['delta', '--hunk-header-style=raw', '--grep-header-file-style=omit', ],
+            env={**os.environ, 'DELTA_FEATURES': '+rg-bm25 '+os.environ.get('DELTA_FEATURES', '')},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
 
     term_size = shutil.get_terminal_size()
     for i, filename in enumerate(ranked, 1):
-        print_line(filenames.get(filename, filename), colour('0;95'), colour('0;1;4;35'))
-
         if args.files_with_matches:
+            print_line(filenames.get(filename, filename), COLOURS['filename'], COLOURS['filename_match'])
             continue
+        print_line(filenames.get(filename, filename), COLOURS['filename'] + COLOURS['filename_header'], COLOURS['filename_match'] + COLOURS['filename_header'])
 
         scores = []
         if filename in data:
@@ -143,7 +165,7 @@ def main():
             matches = {k: set(map(str.lower, v.matches)) for k, v in data[filename].items()}
 
             while len(scores) < args.max_lines_per_file and any(matches.values()):
-                best = sorted(matches.items(), key=lambda kv: (len(kv[1]), line_scores[kv[0]]), reverse=True)[0]
+                best = max(matches.items(), key=lambda kv: (len(kv[1]), line_scores[kv[0]]))
                 matches.pop(best[0])
                 scores.append(best[0])
                 for v in matches.values():
@@ -151,22 +173,54 @@ def main():
             scores.extend(sorted([x for x in data[filename] if x not in scores]))
             scores = sorted(scores[:args.max_lines_per_file])
 
-        last = 1
+        output = set()
         for j in scores:
-            x = data[filename][j]
-            if last != 1 and x.lineno - args.context > last:
-                print(colour('37'), '---', colour('0'), sep='')
+            lineno = data[filename][j].lineno
+            output.update(range(max(1, lineno - args.context), min(len(lines), lineno + args.context)))
+        output = [data[filename].setdefault(x, Data(filename, x, None, lines[x-1], (), (), ())) for x in sorted(output)]
 
-            first = max(last, x.lineno - args.context)
-            last = min(len(lines), x.lineno + args.context) + 1
-            for k in range(first, last):
-                x = data[filename].get(k)
-                if not args.no_line_number:
-                    print(colour('0;37' if x else '0;2;37'), '%-4s' % k, colour('0;37'), '| ', colour('0'), sep='', end='')
-                print_line(x or lines[k-1], colour('0'), colour('1;31'))
+        if not delta:
+            output = itertools.zip_longest(output, ())
+        else:
+            input = []
+            input.append({"type": "begin", "data": {"path": {"text": filename}}})
+            input.extend({
+                "type":"match",
+                "data":{
+                    "path": {"text": filename},
+                    "lines": {"text": ' \n' if x.text == '\n' else x.text},
+                    "line_number": x.lineno,
+                    "absolute_offset": 0,
+                    "submatches": [{'match': {'text': m}, 'start': s, 'end': e} for m, s, e in zip(x.matches, x.starts, x.ends)],
+                },
+            } for x in output)
+            input.append({"type": "end", "data": {"path": {"text": filename}}})
+
+            print('\n'.join(json.dumps(i) for i in input), file=delta.stdin, flush=True)
+            if i > 1:
+                next(delta.stdout) # read the trailer
+            next(delta.stdout) # read the filename
+            output = zip(output, delta.stdout)
+
+        lineno = 1
+        for x, line in output:
+            if lineno != 1 and x.lineno > lineno + 1:
+                print(COLOURS['separator'], '---', COLOURS['reset'], sep='')
+            lineno = x.lineno
+            if not args.no_line_number:
+                print(COLOURS['lineno_match'] if x.matches else COLOURS['lineno'], '%-4s' % x.lineno, COLOURS['lineno'], BAR, COLOURS['reset'], sep='', end='')
+            if line is None:
+                print_line(x, COLOURS['reset'], COLOURS['match'])
+            else:
+                print(line, sep='', end='')
 
         if i != len(ranked):
-            print(colour('37'), '─'*(term_size.columns - 4), colour('0'), sep='')
+            print(COLOURS['separator'], '─'*(term_size.columns - 4), COLOURS['reset'], sep='')
+
+    if delta:
+        delta.stdin.close()
+        delta.wait()
+    print(COLOURS['reset'], end='')
 
 if __name__ == '__main__':
     try:
